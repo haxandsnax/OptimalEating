@@ -1,9 +1,9 @@
 ﻿{
   "Name": "Eat Value Optimizer",
-  "Author": "g133m",
-  "Version": "0.1.0",
+  "Author": "haxandsnax",
+  "Version": "1.0.0",
   "Description": "Helper to determine which item in your inventory is best to eat, energy/sell price",
-  "UniqueID": "g133m.EatValueOptimizer",
+  "UniqueID": "haxandsnax.EatValueOptimizer",
   "EntryDll": "EatValueOptimizer.dll",
   "MinimumApiVersion": "3.0.0",
   "UpdateKeys": []
