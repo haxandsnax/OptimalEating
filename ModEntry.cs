@@ -10,7 +10,7 @@ using StardewValley;
 using StardewValley.Locations;
 using StardewValley.Menus;
 
-namespace EatValueOptimizer
+namespace OptimalEating
 {
     /// <summary>The mod entry point.</summary>
     public class ModEntry : Mod

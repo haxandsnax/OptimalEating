@@ -5,7 +5,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace EatValueOptimizer
+namespace OptimalEating
 {
     public static class Extensions
     {
