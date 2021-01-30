@@ -1,10 +1,10 @@
 ﻿{
-  "Name": "Eat Value Optimizer",
+  "Name": "Optimal Eating",
   "Author": "haxandsnax",
   "Version": "1.0.0",
   "Description": "Helper to determine which item in your inventory is best to eat, energy/sell price",
   "UniqueID": "haxandsnax.EatValueOptimizer",
   "EntryDll": "EatValueOptimizer.dll",
   "MinimumApiVersion": "3.0.0",
-  "UpdateKeys": []
+  "UpdateKeys": ["github:haxandsnax/OptimalEating"]
 }
