@@ -7,9 +7,9 @@
     <ProjectGuid>{67F17CD2-C998-4F58-9C01-59D7996D3E2B}</ProjectGuid>
     <OutputType>Library</OutputType>
     <AppDesignerFolder>Properties</AppDesignerFolder>
-    <RootNamespace>EatValueOptimizer</RootNamespace>
-    <AssemblyName>EatValueOptimizer</AssemblyName>
-    <TargetFrameworkVersion>v4.5.2</TargetFrameworkVersion>
+    <RootNamespace>OptimalEating</RootNamespace>
+    <AssemblyName>OptimalEating</AssemblyName>
+    <TargetFrameworkVersion>v4.6.1</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <NuGetPackageImportStamp>
     </NuGetPackageImportStamp>
