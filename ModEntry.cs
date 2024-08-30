@@ -306,7 +306,7 @@ namespace OptimalEating
             if(!config.DisableText && bestItem.Value != null && player.CurrentToolIndex == player.Items.IndexOf(bestItem.Value))
             {
                 string energyText = $"Energy: {bestItem.Value.staminaRecoveredOnConsumption()}";
-                float stringWidth = Game1.tinyFontBorder.MeasureString(energyText).X;
+                float stringWidth = Game1.tinyFont.MeasureString(energyText).X;
                 Vector2 pos = player.getLocalPosition(Game1.viewport);
                 pos.Y -= 100;
                 pos.X -= stringWidth / 2;
