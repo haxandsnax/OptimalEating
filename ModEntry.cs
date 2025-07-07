@@ -158,62 +158,7 @@ namespace OptimalEating
             {
                 RestoreLastItem(e.Player);
             }
-
-            CheckNeededBundleItems();
         }
-
-        private bool NeededForBundle(StardewValley.Object item)
-        {
-            return itemsNeeded.Any(i => i.Key == item.ParentSheetIndex && i.Value.Any(qual => item.quality >= qual));
-        }
-
-        private void CheckNeededBundleItems()
-        {
-            // Bundle checks adapted from UI Info Suite
-            // https://github.com/Annosz/UIInfoSuite2/blob/master/UIInfoSuite2/UIElements/ShowItemHoverInformation.cs
-            itemsNeeded = new Dictionary<int, List<int>>();
-            foreach (var bundle in _bundleData)
-            {
-                string[] bundleRoomInfo = bundle.Key.Split('/');
-                string bundleRoom = bundleRoomInfo[0];
-                int roomNum;
-
-                switch (bundleRoom)
-                {
-                    case "Pantry": roomNum = 0; break;
-                    case "Crafts Room": roomNum = 1; break;
-                    case "Fish Tank": roomNum = 2; break;
-                    case "Boiler Room": roomNum = 3; break;
-                    case "Vault": roomNum = 4; break;
-                    case "Bulletin Board": roomNum = 5; break;
-                    case "Abandoned Joja Mart": roomNum = 6; break;
-                    default: continue;
-                }
-
-                if (_communityCenter.shouldNoteAppearInArea(roomNum))
-                {
-                    int bundleNumber = bundleRoomInfo[1].SafeParseInt32();
-                    string[] bundleInfo = bundle.Value.Split('/');
-                    string bundleName = bundleInfo[0];
-                    string[] bundleValues = bundleInfo[2].Split(' ');
-                    for (int i = 0; i < bundleValues.Length; i += 3)
-                    {
-                        int bundleValue = bundleValues[i].SafeParseInt32();
-                        int quality = bundleValues[i + 2].SafeParseInt32();
-
-                        if (bundleValue != -1 && !_communityCenter.bundles[bundleNumber][i / 3])
-                        {
-                            if (!itemsNeeded.ContainsKey(bundleValue))
-                            {
-                                itemsNeeded[bundleValue] = new List<int>();
-                            }
-                            itemsNeeded[bundleValue].Add(quality);
-                        }
-                    }
-                }
-            }
-        }
-
 
         private void CheckBestItems(Farmer player)
         {
@@ -262,7 +207,7 @@ namespace OptimalEating
             float energyNeeded = player.MaxStamina - player.Stamina;
 
             return GetValidPlayerItems(player)
-                .Where(i => i.staminaRecoveredOnConsumption() > 0 && !NeededForBundle(i))
+                .Where(i => i.staminaRecoveredOnConsumption() > 0)
                 .OrderByDescending(i =>
                 {
                     int price = i.sellToStorePrice();
@@ -279,6 +224,7 @@ namespace OptimalEating
             if(bestItem.Value != null && player.CurrentToolIndex == player.Items.IndexOf(bestItem.Value) && !player.IsBusyDoingSomething())
             {
                 player.eatHeldObject();
+                player.reduceActiveItemByOne();
                 RestoreLastItem(player);
             }
         }
