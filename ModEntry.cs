@@ -1,232 +1,327 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using Microsoft.Xna.Framework;
+﻿using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
+using Netcode;
 using StardewModdingAPI;
 using StardewModdingAPI.Events;
 using StardewModdingAPI.Utilities;
 using StardewValley;
 using StardewValley.Locations;
-using StardewValley.Menus;
+using StardewValley.Network;
+using System;
+using System.Collections.Generic;
+using System.Linq;
 
 namespace OptimalEating
 {
-    /// <summary>The mod entry point.</summary>
     public class ModEntry : Mod
     {
-        const int MaxPlayerCount = 4;
+        private const int MaxPlayerCount = 4;
         private PerScreen<StardewValley.Object> bestItem = new PerScreen<StardewValley.Object>();
+        private PerScreen<List<StardewValley.Object>> bestItemCache = new PerScreen<List<StardewValley.Object>>();
         private PerScreen<int> lastItemIndex = new PerScreen<int>(() => -1);
         private PerScreen<KeybindList> myKeybinds = new PerScreen<KeybindList>();
-        private long?[] connectedFarmers = new long?[MaxPlayerCount];
+        private long?[] connectedFarmers = new long?[4];
         private ModConfig config;
-
         private CommunityCenter _communityCenter;
         private Dictionary<string, string> _bundleData;
         private Dictionary<int, List<int>> itemsNeeded = new Dictionary<int, List<int>>();
 
-        private enum HotkeyAction
-        {
-            CycleFood,
-            Eat,
-            ForceEat,
-            Cancel
-        };
-
-        /*********
-        ** Public methods
-        *********/
-        /// <summary>The mod entry point, called after the mod is first loaded.</summary>
-        /// <param name="helper">Provides simplified APIs for writing mods.</param>
         public override void Entry(IModHelper helper)
         {
             config = helper.ReadConfig<ModConfig>();
-            helper.Events.Player.InventoryChanged += CheckInventory;
-            helper.Events.Input.ButtonsChanged += CheckHotkey;
-            helper.Events.Display.RenderedHud += CheckBestItemHeld;
-            helper.Events.GameLoop.SaveLoaded += SetPlayerNumber;
-            helper.Events.Multiplayer.PeerDisconnected += ReleasePlayer;
-            helper.Events.GameLoop.SaveLoaded += (object sender, SaveLoadedEventArgs e) =>
+            helper.Events.Player.InventoryChanged += new EventHandler<InventoryChangedEventArgs>(CheckInventory);
+            helper.Events.World.DebrisListChanged += new EventHandler<DebrisListChangedEventArgs>(CheckWorldItemPreferences);
+            helper.Events.Input.ButtonsChanged += new EventHandler<ButtonsChangedEventArgs>(CheckHotkey);
+            helper.Events.Display.RenderedHud += new EventHandler<RenderedHudEventArgs>(DisplayItemStats);
+            helper.Events.GameLoop.SaveLoaded += new EventHandler<SaveLoadedEventArgs>(SetPlayerNumber);
+            helper.Events.Multiplayer.PeerDisconnected += new EventHandler<PeerDisconnectedEventArgs>(ReleasePlayer);
+            helper.Events.GameLoop.SaveLoaded += (sender, e) =>
             {
                 _communityCenter = Game1.getLocationFromName("CommunityCenter") as CommunityCenter;
                 _bundleData = Game1.netWorldState.Value.BundleData;
-
             };
         }
 
         private void ReleasePlayer(object sender, PeerDisconnectedEventArgs e)
         {
             if (!Context.IsMainPlayer || !Context.IsSplitScreen)
-            {
                 return;
-            }
-            // clear player from keybind / player slot
-            for (int i = 0; i < MaxPlayerCount; ++i)
+            for (int index = 0; index < 4; ++index)
             {
-                if (connectedFarmers[i] == e.Peer.PlayerID)
+                long? connectedFarmer = connectedFarmers[index];
+                long playerId = e.Peer.PlayerID;
+                if ((connectedFarmer.GetValueOrDefault() == playerId ? (connectedFarmer.HasValue ? 1 : 0) : 0) != 0)
                 {
                     connectedFarmers = null;
-                    return;
+                    break;
                 }
             }
         }
 
         private void SetPlayerNumber(object sender, SaveLoadedEventArgs e)
         {
+            ItemPreferences.Init(Game1.player);
             if (!Context.IsSplitScreen || Context.IsMainPlayer)
             {
-                connectedFarmers[0] = Game1.player.UniqueMultiplayerID;
+                connectedFarmers[0] = new long?(Game1.player.UniqueMultiplayerID);
                 myKeybinds.Value = config.Keybinds[0];
-                return;
             }
-
-            // find next available keybind / player slot
-            for (int i = 0; i < MaxPlayerCount; ++i) {
-                if(connectedFarmers[i] == null)
+            else
+            {
+                for (int index = 0; index < 4; ++index)
                 {
-                    if(config.Keybinds.Count < i+1)
+                    if (!connectedFarmers[index].HasValue && config.Keybinds.Count >= index + 1)
                     {
-                        
-                        continue;
+                        connectedFarmers[index] = new long?(Game1.player.UniqueMultiplayerID);
+                        myKeybinds.Value = config.Keybinds[index];
+                        break;
                     }
-                    connectedFarmers[i] = Game1.player.UniqueMultiplayerID;
-                    myKeybinds.Value = config.Keybinds[i];
-                    return;
                 }
             }
         }
 
-        /*********
-        ** Private methods
-        *********/
-
-        /// <summary>Raised when button is pressed</summary>
-        /// <param name="sender">The event sender.</param>
-        /// <param name="e">The event arguments.</param>
-
         private void CheckHotkey(object sender, ButtonsChangedEventArgs e)
         {
-            if(myKeybinds.Value == null)
-            {
+            if (myKeybinds.Value == null || Game1.player.IsBusyDoingSomething())
                 return;
-            }
-            KeybindList keybinds = myKeybinds.Value;
+            KeybindList keybindList = myKeybinds.Value;
             Farmer player = Game1.player;
-            if(!keybinds.JustPressed())
-            {
+            if (!keybindList.JustPressed() || CheckFavorites(player, keybindList))
                 return;
-            }
-
-            if (bestItem.Value != null && keybinds.GetByType(KeybindType.CancelKeybind).IsPressed())
+            if (bestItem.Value != null && keybindList.GetByType(KeybindType.CancelKeybind).IsPressed())
             {
-                keybinds.SuppressType(Helper, KeybindType.CancelKeybind);
+                keybindList.SuppressType(Helper, KeybindType.CancelKeybind);
                 RestoreLastItem(player);
-                return;
             }
-
-            if (bestItem.Value != null && keybinds.PressedByType(KeybindType.ForceEatFoodKeybind))
+            else
             {
-                keybinds.SuppressType(Helper, KeybindType.ForceEatFoodKeybind);
-                EatBestItem(player);
-                return;
-            }
+                if (keybindList.PressedByType(KeybindType.CycleFoodKeybind))
+                {
+                    keybindList.SuppressType(Helper, KeybindType.CycleFoodKeybind);
+                    CheckBestItems(player);
+                }
 
-            if (keybinds.PressedByType(KeybindType.CycleFoodKeybind))
-            {
-                keybinds.SuppressType(Helper, KeybindType.CycleFoodKeybind);
-                CheckBestItems(player);
-            }
-
-            if (bestItem != null && (keybinds.PressedByType(KeybindType.ForceEatFoodKeybind) || keybinds.PressedByType(KeybindType.EatCurrentFoodKeybind)))
-            {
-                keybinds.SuppressType(Helper, KeybindType.ForceEatFoodKeybind);
-                keybinds.SuppressType(Helper, KeybindType.EatCurrentFoodKeybind);
-                EatBestItem(player);
+                if (keybindList.PressedByType(KeybindType.EatCurrentFoodKeybind))
+                {
+                    keybindList.SuppressType(Helper, KeybindType.EatCurrentFoodKeybind);
+                    EatBestItem(player);
+                }
             }
         }
 
-        /// <summary>Raised after the player presses a button on the keyboard, controller, or mouse.</summary>
-        /// <param name="sender">The event sender.</param>
-        /// <param name="e">The event data.</param>
         private void CheckInventory(object sender, InventoryChangedEventArgs e)
         {
-            // ignore if player hasn't loaded a save yet or it's not the local player
             if (!Context.IsWorldReady || !e.IsLocalPlayer)
                 return;
-            if (bestItem.Value != null && !e.Player.Items.Contains(bestItem.Value))
+            e.Removed.Where(i => ItemPreferences.FavoriteIndex(i, Game1.player) > -1).ToList<Item>().ForEach(i =>
             {
+                if (Game1.player.CursorSlotItem == i)
+                    return;
+                ItemPreferences.Clear(i, e.Player);
+            });
+            if (bestItem.Value != null && e.Removed.Contains(bestItem.Value))
                 RestoreLastItem(e.Player);
+            bestItemCache.Value = GetBestItems(e.Player);
+            CheckNeededBundleItems();
+        }
+
+        private void CheckWorldItemPreferences(object sender, DebrisListChangedEventArgs e)
+        {
+            e.Added.Where(i => ItemPreferences.FavoriteIndex(i.item, Game1.player) > -1).ToList().ForEach(i => ItemPreferences.Clear(i.item, Game1.player));
+        }
+
+        private bool CheckFavorites(Farmer player, KeybindList keybinds)
+        {
+            if (keybinds.GetByType(KeybindType.EatFavoriteFood1Keybind).IsPressed())
+            {
+                keybinds.SuppressType(Helper, KeybindType.EatFavoriteFood1Keybind);
+                StardewValley.Object byIndex = ItemPreferences.GetByIndex(player, 0);
+                if (byIndex != null)
+                    EatItem(player, byIndex);
+                return true;
+            }
+            if (keybinds.GetByType(KeybindType.EatFavoriteFood2Keybind).IsPressed())
+            {
+                keybinds.SuppressType(Helper, KeybindType.EatFavoriteFood2Keybind);
+                StardewValley.Object byIndex = ItemPreferences.GetByIndex(player, 1);
+                if (byIndex != null)
+                    EatItem(player, byIndex);
+                return true;
+            }
+            if (keybinds.GetByType(KeybindType.EatFavoriteFood3Keybind).IsPressed())
+            {
+                keybinds.SuppressType(Helper, KeybindType.EatFavoriteFood3Keybind);
+                StardewValley.Object byIndex = ItemPreferences.GetByIndex(player, 2);
+                if (byIndex != null)
+                    EatItem(player, byIndex);
+                return true;
+            }
+            if (keybinds.GetByType(KeybindType.EatFavoriteFood4Keybind).IsPressed())
+            {
+                keybinds.SuppressType(Helper, KeybindType.EatFavoriteFood4Keybind);
+                StardewValley.Object byIndex = ItemPreferences.GetByIndex(player, 3);
+                if (byIndex != null)
+                    EatItem(player, byIndex);
+                return true;
+            }
+            bool hasEatingValue = player.ActiveObject != null && (player.ActiveObject.staminaRecoveredOnConsumption() > 0 || player.ActiveObject.healthRecoveredOnConsumption() > 0);
+            if (hasEatingValue && keybinds.GetByType(KeybindType.FavoriteFood1Keybind).IsPressed())
+            {
+                keybinds.SuppressType(Helper, KeybindType.FavoriteFood1Keybind);
+                ItemPreferences.ToggleFavorite(player.ActiveObject, player, 0);
+                return true;
+            }
+            if (hasEatingValue && keybinds.GetByType(KeybindType.FavoriteFood2Keybind).IsPressed())
+            {
+                keybinds.SuppressType(Helper, KeybindType.FavoriteFood2Keybind);
+                ItemPreferences.ToggleFavorite(player.ActiveObject, player, 1);
+                return true;
+            }
+            if (hasEatingValue && keybinds.GetByType(KeybindType.FavoriteFood3Keybind).IsPressed())
+            {
+                keybinds.SuppressType(Helper, KeybindType.FavoriteFood3Keybind);
+                ItemPreferences.ToggleFavorite(player.ActiveObject, player, 2);
+                return true;
+            }
+            if (hasEatingValue && keybinds.GetByType(KeybindType.FavoriteFood4Keybind).IsPressed())
+            {
+                keybinds.SuppressType(Helper, KeybindType.FavoriteFood4Keybind);
+                ItemPreferences.ToggleFavorite(player.ActiveObject, player, 3);
+                return true;
+            }
+
+            return false;
+        }
+
+        private bool NeededForBundle(StardewValley.Object item)
+        {
+            return itemsNeeded.Any(i => i.Key == item.ParentSheetIndex && i.Value.Any(qual => item.quality.Value >= qual));
+        }
+
+        // TODO: this is wild. Decompiler messed this up.
+        private void CheckNeededBundleItems()
+        {
+            itemsNeeded = new Dictionary<int, List<int>>();
+            foreach (KeyValuePair<string, string> keyValuePair in _bundleData)
+            {
+                string[] strArray1 = keyValuePair.Key.Split('/');
+                int num;
+                switch (strArray1[0])
+                {
+                    case "Abandoned Joja Mart":
+                        num = 6;
+                        break;
+                    case "Boiler Room":
+                        num = 3;
+                        break;
+                    case "Bulletin Board":
+                        num = 5;
+                        break;
+                    case "Crafts Room":
+                        num = 1;
+                        break;
+                    case "Fish Tank":
+                        num = 2;
+                        break;
+                    case "Pantry":
+                        num = 0;
+                        break;
+                    case "Vault":
+                        num = 4;
+                        break;
+                    default:
+                        continue;
+                }
+                if (_communityCenter.shouldNoteAppearInArea(num))
+                {
+                    int bundleIndex = strArray1[1].SafeParseInt32();
+                    string[] strArray2 = keyValuePair.Value.Split('/');
+                    string str = strArray2[0];
+                    string[] strArray3 = strArray2[2].Split(' ');
+                    for (int index = 0; index < strArray3.Length; index += 3)
+                    {
+                        int int32_2 = strArray3[index].SafeParseInt32();
+                        int int32_3 = strArray3[index + 2].SafeParseInt32();
+                        if (int32_2 != -1 && !_communityCenter.bundles[bundleIndex][index / 3])
+                        {
+                            if (!itemsNeeded.ContainsKey(int32_2))
+                                itemsNeeded[int32_2] = new List<int>();
+                            itemsNeeded[int32_2].Add(int32_3);
+                        }
+                    }
+                }
             }
         }
 
         private void CheckBestItems(Farmer player)
         {
-            List<StardewValley.Object> items = GetBestItems(player);
-            if(items.Count == 0)
+            if (bestItemCache.Value == null)
+                bestItemCache.Value = GetBestItems(player);
+            List<StardewValley.Object> bestItems = bestItemCache.Value;
+            if (bestItems.Count == 0)
             {
                 Game1.addHUDMessage(new HUDMessage("No food to eat", 3));
                 return;
             }
-            else if(player.Stamina == player.MaxStamina)
-            {
-                Game1.addHUDMessage(new HUDMessage("Energy at max", 4));
-                return;
-            }
 
-            StardewValley.Object heldItem = (StardewValley.Object)(player.Items[player.CurrentToolIndex] is StardewValley.Object ? player.Items[player.CurrentToolIndex] : null);
-            if (!items.Contains(heldItem))
+            // If we're just starting to cycle through favorites,
+            // store the index of the current item so we can get back to it
+            if(bestItem.Value == null)
             {
-                // store current toolbar item to swap back after eating
                 PreserveLastItem(player);
             }
-            else if (items.IndexOf(heldItem) == items.Count - 1)
+
+
+            var currentObject = (StardewValley.Object)(player.CurrentItem is StardewValley.Object ? player.CurrentItem : null);
+            if (bestItems.IndexOf(currentObject) == bestItems.Count - 1)
             {
                 RestoreLastItem(player);
                 return;
             }
-            
-            // cycle to the next best item
-            bestItem.Value = bestItem.Value == null ? items.FirstOrDefault() : items[(items.IndexOf(heldItem) + 1) % items.Count];
-
-            if(bestItem.Value != null)
-            {
-                player.CurrentToolIndex = player.Items.IndexOf(bestItem.Value);
-            }
+            bestItem.Value = bestItem.Value == null ? bestItems.FirstOrDefault() : bestItems[(bestItems.IndexOf(currentObject) + 1) % bestItems.Count];
+            if (bestItem.Value == null)
+                return;
+            player.CurrentToolIndex = player.Items.IndexOf(bestItem.Value);
         }
 
         private IEnumerable<StardewValley.Object> GetValidPlayerItems(Farmer player)
         {
-            return player.Items
-                .Where(i => i is StardewValley.Object)
-                .Select(i => i as StardewValley.Object);
+            return player.Items.Where(i => i is StardewValley.Object).Select(i => i as StardewValley.Object);
         }
 
         private List<StardewValley.Object> GetBestItems(Farmer player)
         {
-            float energyNeeded = player.MaxStamina - player.Stamina;
+            double energyNeeded = player.MaxStamina - player.Stamina;
+            double healthNeeded = (player.maxHealth - player.health);
+            double energyWeight = Math.Pow(1.0 / (player.maxHealth - player.health + 1) * player.maxHealth, 2.0);
+            double healthWeight = Math.Pow(1.0 / (player.maxHealth - player.health + 1) * player.maxHealth, 2.0);
 
-            return GetValidPlayerItems(player)
-                .Where(i => i.staminaRecoveredOnConsumption() > 0)
-                .OrderByDescending(i =>
-                {
-                    int price = i.sellToStorePrice();
-                    if (price == 0)
-                    {
-                        return 0;
-                    }
-                    return Math.Min(i.staminaRecoveredOnConsumption(), energyNeeded) / price;
-                }).ToList();
+            return GetValidPlayerItems(player).Where(i => (i.staminaRecoveredOnConsumption() > 0 || (i.healthRecoveredOnConsumption() > 0) && !NeededForBundle(i))).Where(i => !ItemPreferences.IsBanned(i, player, config)).OrderByDescending(i =>
+            {
+                int storePrice = i.sellToStorePrice(-1L);
+                double energy = Math.Min(i.staminaRecoveredOnConsumption(), energyNeeded) * energyWeight;
+                double health = Math.Min(i.healthRecoveredOnConsumption(), healthNeeded) * healthWeight;
+                return storePrice == 0 ? 0.0 : (energy + health) / storePrice;
+            }).ToList();
         }
 
         private void EatBestItem(Farmer player)
         {
-            if(bestItem.Value != null && player.CurrentToolIndex == player.Items.IndexOf(bestItem.Value) && !player.IsBusyDoingSomething())
-            {
-                player.eatHeldObject();
-                player.reduceActiveItemByOne();
-                RestoreLastItem(player);
-            }
+            if (bestItem.Value == null || player.CurrentToolIndex != player.Items.IndexOf(bestItem.Value) || player.IsBusyDoingSomething())
+                return;
+            player.eatHeldObject();
+            RestoreLastItem(player);
+        }
+
+        private void EatItem(Farmer player, StardewValley.Object item)
+        {
+            if (player.IsBusyDoingSomething())
+                return;
+            player.eatObject(item);
+            if (item.Stack <= 1)
+                player.removeItemFromInventory(item);
+            else
+                player.Items[player.Items.IndexOf(item)].Stack -= 1;
         }
 
         private void PreserveLastItem(Farmer player)
@@ -237,32 +332,43 @@ namespace OptimalEating
         private void RestoreLastItem(Farmer player)
         {
             bestItem.Value = null;
-            if(lastItemIndex.Value > -1)
-            {
-                player.CurrentToolIndex = lastItemIndex.Value;
-                lastItemIndex.Value = -1;
+            if (lastItemIndex.Value <= -1)
                 return;
-            }
+            player.CurrentToolIndex = lastItemIndex.Value;
+            lastItemIndex.Value = -1;
         }
 
-
-        private void CheckBestItemHeld(object sender, RenderedHudEventArgs e)
+        private void DisplayItemStats(object sender, RenderedHudEventArgs e)
         {
             Farmer player = Game1.player;
-            if(!config.DisableText && bestItem.Value != null && player.CurrentToolIndex == player.Items.IndexOf(bestItem.Value))
-            {
-                string energyText = $"Energy: {bestItem.Value.staminaRecoveredOnConsumption()}";
-                float stringWidth = Game1.tinyFont.MeasureString(energyText).X;
-                Vector2 pos = player.getLocalPosition(Game1.viewport);
-                pos.Y -= 100;
-                pos.X -= stringWidth / 2;
-                Utility.drawBoldText(
-                        Game1.spriteBatch,
-                        energyText,
-                        Game1.tinyFont,
-                        Utility.ModifyCoordinatesForUIScale(pos),
-                        Color.Black);
-            }
+            if (config.DisableText || bestItem.Value == null || player.CurrentToolIndex != player.Items.IndexOf(bestItem.Value))
+                return;
+            ItemPreferences.FavoriteIndex(bestItem.Value, player);
+            Vector2 leftPos = Utility.ModifyCoordinatesForUIScale(player.getLocalPosition(Game1.viewport));
+            leftPos.Y -= Utility.ModifyCoordinateForUIScale(150f);
+            Extensions.DrawNumber(Math.Min(player.maxHealth - player.health, bestItem.Value.healthRecoveredOnConsumption()), leftPos);
+            leftPos.X -= Utility.ModifyCoordinateForUIScale(21f);
+            Game1.spriteBatch.Draw(Game1.mouseCursors, leftPos, new Rectangle?(new Rectangle(0, 438, 10, 10)), Color.White, 0.0f, Vector2.Zero, Utility.ModifyCoordinateForUIScale(2f), SpriteEffects.None, 0.01f);
+            leftPos.X += Utility.ModifyCoordinateForUIScale(21f);
+            leftPos.Y -= Utility.ModifyCoordinateForUIScale(21f);
+            Extensions.DrawNumber(Math.Min(player.maxStamina.Value - (int)player.stamina, bestItem.Value.staminaRecoveredOnConsumption()), leftPos);
+            leftPos.X -= Utility.ModifyCoordinateForUIScale(21f);
+            Game1.spriteBatch.Draw(Game1.mouseCursors, leftPos, new Rectangle?(new Rectangle(0, 428, 10, 10)), Color.White, 0.0f, Vector2.Zero, Utility.ModifyCoordinateForUIScale(2f), SpriteEffects.None, 0.01f);
+            int num = ItemPreferences.FavoriteIndex((Item)bestItem.Value, player);
+            if (num <= -1)
+                return;
+            leftPos.Y -= Utility.ModifyCoordinateForUIScale(22f);
+            Game1.spriteBatch.Draw(Game1.mouseCursors, leftPos, new Rectangle?(new Rectangle(211, 428, 7, 6)), Color.White, 0.0f, Vector2.Zero, Utility.ModifyCoordinateForUIScale(3f),SpriteEffects.None, 0.01f);
+            leftPos.X += Utility.ModifyCoordinateForUIScale(21f);
+            Extensions.DrawNumber(num + 1, leftPos);
+        }
+
+        private enum HotkeyAction
+        {
+            CycleFood,
+            Eat,
+            ForceEat,
+            Cancel,
         }
     }
 }
